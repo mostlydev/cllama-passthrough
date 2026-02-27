@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cllama passthrough - costs</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --ink: #111827;
+      --muted: #6b7280;
+      --line: #d1d5db;
+      --brand: #0f766e;
+      --danger: #b91c1c;
+      --panel: #ffffff;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+      background: radial-gradient(circle at top right, #e6fffa, var(--bg) 40%);
+      color: var(--ink);
+    }
+    main {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0 0 18px;
+      color: var(--muted);
+    }
+    nav {
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+    nav a {
+      color: var(--brand);
+      text-decoration: none;
+      margin-right: 16px;
+      font-weight: 600;
+    }
+    nav a:hover {
+      text-decoration: underline;
+    }
+    nav a.active {
+      color: var(--ink);
+      pointer-events: none;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 28px rgba(17, 24, 39, 0.05);
+    }
+    .total-banner {
+      text-align: center;
+      padding: 28px 16px;
+    }
+    .total-banner .amount {
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--brand);
+    }
+    .total-banner .label {
+      font-size: 14px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    th.num {
+      text-align: right;
+    }
+    .mono {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .model-detail {
+      font-size: 12px;
+      color: var(--muted);
+      padding-left: 20px;
+    }
+    .empty {
+      text-align: center;
+      padding: 32px;
+      color: var(--muted);
+    }
+    @media (max-width: 860px) {
+      th:nth-child(3), td:nth-child(3),
+      th:nth-child(4), td:nth-child(4) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>cllama passthrough</h1>
+    <p>Cost tracking across agents and models.</p>
+
+    <nav>
+      <a href="/">Providers</a>
+      <a href="/costs" class="active">Costs</a>
+    </nav>
+
+    <section class="panel total-banner">
+      <div class="amount">${{printf "%.4f" .TotalCostUSD}}</div>
+      <div class="label">Total spend across all agents</div>
+    </section>
+
+    <section class="panel">
+      <h2>Per-Agent Breakdown</h2>
+      {{if .Agents}}
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th class="num">Requests</th>
+            <th class="num">Tokens In</th>
+            <th class="num">Tokens Out</th>
+            <th class="num">Cost (USD)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Agents}}
+          <tr>
+            <td><span class="tag">{{.AgentID}}</span></td>
+            <td class="num">{{.TotalRequests}}</td>
+            <td class="num">{{.TotalTokensIn}}</td>
+            <td class="num">{{.TotalTokensOut}}</td>
+            <td class="num mono">${{printf "%.4f" .TotalCostUSD}}</td>
+          </tr>
+          {{range .Models}}
+          <tr class="model-detail">
+            <td class="model-detail">{{.Provider}}/{{.Model}}</td>
+            <td class="num model-detail">{{.Requests}}</td>
+            <td class="num model-detail">{{.TokensIn}}</td>
+            <td class="num model-detail">{{.TokensOut}}</td>
+            <td class="num model-detail mono">${{printf "%.4f" .CostUSD}}</td>
+          </tr>
+          {{end}}
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No cost data recorded yet.</div>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>

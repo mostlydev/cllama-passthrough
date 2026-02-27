@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
 
@@ -111,5 +113,121 @@ func TestNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		b, _ := io.ReadAll(w.Result().Body)
 		t.Fatalf("expected 404, got %d body=%s", w.Code, string(b))
+	}
+}
+
+func TestUICostsPageRenders(t *testing.T) {
+	reg := provider.NewRegistry(t.TempDir())
+	acc := cost.NewAccumulator()
+	acc.Record("tiverton", "anthropic", "claude-sonnet-4", 1000, 500, 0.0105)
+	acc.Record("westin", "openai", "gpt-4o", 2000, 1000, 0.035)
+
+	h := NewHandler(reg, WithAccumulator(acc))
+	req := httptest.NewRequest("GET", "/costs", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "tiverton") {
+		t.Error("expected agent name 'tiverton' in response")
+	}
+	if !strings.Contains(body, "westin") {
+		t.Error("expected agent name 'westin' in response")
+	}
+	if !strings.Contains(body, "0.0105") {
+		t.Error("expected cost value 0.0105 in response")
+	}
+	if !strings.Contains(body, "0.0455") {
+		t.Error("expected total cost 0.0455 in response")
+	}
+}
+
+func TestUICostsPageRendersEmpty(t *testing.T) {
+	reg := provider.NewRegistry(t.TempDir())
+	h := NewHandler(reg) // no accumulator
+
+	req := httptest.NewRequest("GET", "/costs", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "No cost data") {
+		t.Error("expected empty-state message")
+	}
+}
+
+func TestUICostsAPIReturnsJSON(t *testing.T) {
+	reg := provider.NewRegistry(t.TempDir())
+	acc := cost.NewAccumulator()
+	acc.Record("tiverton", "anthropic", "claude-sonnet-4", 1000, 500, 0.0105)
+
+	h := NewHandler(reg, WithAccumulator(acc))
+	req := httptest.NewRequest("GET", "/costs/api", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("expected JSON content type, got %q", ct)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := result["total_cost_usd"]; !ok {
+		t.Error("expected total_cost_usd field")
+	}
+	if _, ok := result["agents"]; !ok {
+		t.Error("expected agents field")
+	}
+
+	// Verify structure more deeply
+	totalCost, ok := result["total_cost_usd"].(float64)
+	if !ok {
+		t.Fatal("total_cost_usd is not a number")
+	}
+	if totalCost < 0.01 {
+		t.Errorf("expected total_cost_usd >= 0.01, got %f", totalCost)
+	}
+
+	agents, ok := result["agents"].(map[string]interface{})
+	if !ok {
+		t.Fatal("agents is not an object")
+	}
+	if _, ok := agents["tiverton"]; !ok {
+		t.Error("expected 'tiverton' in agents")
+	}
+}
+
+func TestUICostsAPIEmptyAccumulator(t *testing.T) {
+	reg := provider.NewRegistry(t.TempDir())
+	h := NewHandler(reg) // no accumulator
+
+	req := httptest.NewRequest("GET", "/costs/api", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var result costsAPIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if result.TotalCostUSD != 0 {
+		t.Errorf("expected 0 total cost, got %f", result.TotalCostUSD)
+	}
+	if len(result.Agents) != 0 {
+		t.Errorf("expected empty agents map, got %d entries", len(result.Agents))
 	}
 }

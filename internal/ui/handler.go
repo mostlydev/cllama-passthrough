@@ -2,20 +2,34 @@ package ui
 
 import (
 	"embed"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
 
+// UIOption configures optional Handler dependencies.
+type UIOption func(*Handler)
+
+// WithAccumulator attaches a cost accumulator to the UI handler,
+// enabling the /costs dashboard and /costs/api endpoint.
+func WithAccumulator(acc *cost.Accumulator) UIOption {
+	return func(h *Handler) {
+		h.accumulator = acc
+	}
+}
+
 type Handler struct {
-	registry *provider.Registry
-	tpl      *template.Template
+	registry    *provider.Registry
+	accumulator *cost.Accumulator
+	tpl         *template.Template
 }
 
 type providerRow struct {
@@ -30,12 +44,63 @@ type pageData struct {
 	Error     string
 }
 
-func NewHandler(reg *provider.Registry) http.Handler {
+// -- costs page types --
+
+type costsPageData struct {
+	TotalCostUSD float64
+	Agents       []agentCostRow
+}
+
+type agentCostRow struct {
+	AgentID        string
+	TotalRequests  int
+	TotalTokensIn  int
+	TotalTokensOut int
+	TotalCostUSD   float64
+	Models         []modelCostRow
+}
+
+type modelCostRow struct {
+	Provider  string
+	Model     string
+	Requests  int
+	TokensIn  int
+	TokensOut int
+	CostUSD   float64
+}
+
+// -- costs API types --
+
+type costsAPIResponse struct {
+	TotalCostUSD float64                     `json:"total_cost_usd"`
+	Agents       map[string]agentAPIResponse `json:"agents"`
+}
+
+type agentAPIResponse struct {
+	TotalCostUSD  float64            `json:"total_cost_usd"`
+	TotalRequests int                `json:"total_requests"`
+	Models        []modelAPIResponse `json:"models"`
+}
+
+type modelAPIResponse struct {
+	Provider    string  `json:"provider"`
+	Model       string  `json:"model"`
+	InputTokens int     `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	CostUSD     float64 `json:"cost_usd"`
+	Requests    int     `json:"requests"`
+}
+
+func NewHandler(reg *provider.Registry, opts ...UIOption) http.Handler {
 	if reg == nil {
 		reg = provider.NewRegistry("")
 	}
-	tpl := template.Must(template.ParseFS(templateFS, "templates/index.html"))
-	return &Handler{registry: reg, tpl: tpl}
+	tpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+	h := &Handler{registry: reg, tpl: tpl}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +110,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case r.Method == http.MethodPost && r.URL.Path == "/providers":
 		h.handleProviderUpdate(w, r)
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/costs":
+		h.renderCosts(w)
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/costs/api":
+		h.handleCostsAPI(w)
 		return
 	default:
 		http.NotFound(w, r)
@@ -111,7 +182,89 @@ func (h *Handler) renderIndex(w http.ResponseWriter, errText string, status int)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_ = h.tpl.Execute(w, pageData{Providers: rows, Error: errText})
+	_ = h.tpl.ExecuteTemplate(w, "index.html", pageData{Providers: rows, Error: errText})
+}
+
+func (h *Handler) renderCosts(w http.ResponseWriter) {
+	data := h.buildCostsPageData()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = h.tpl.ExecuteTemplate(w, "costs.html", data)
+}
+
+func (h *Handler) handleCostsAPI(w http.ResponseWriter) {
+	resp := h.buildCostsAPIResponse()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(resp)
+}
+
+func (h *Handler) buildCostsPageData() costsPageData {
+	if h.accumulator == nil {
+		return costsPageData{}
+	}
+
+	grouped := h.accumulator.All()
+	agentIDs := make([]string, 0, len(grouped))
+	for id := range grouped {
+		agentIDs = append(agentIDs, id)
+	}
+	sort.Strings(agentIDs)
+
+	var agents []agentCostRow
+	for _, id := range agentIDs {
+		entries := grouped[id]
+		row := agentCostRow{AgentID: id}
+		for _, e := range entries {
+			row.TotalRequests += e.RequestCount
+			row.TotalTokensIn += e.TotalInputTokens
+			row.TotalTokensOut += e.TotalOutputTokens
+			row.TotalCostUSD += e.TotalCostUSD
+			row.Models = append(row.Models, modelCostRow{
+				Provider:  e.Provider,
+				Model:     e.Model,
+				Requests:  e.RequestCount,
+				TokensIn:  e.TotalInputTokens,
+				TokensOut: e.TotalOutputTokens,
+				CostUSD:   e.TotalCostUSD,
+			})
+		}
+		agents = append(agents, row)
+	}
+
+	return costsPageData{
+		TotalCostUSD: h.accumulator.TotalCost(),
+		Agents:       agents,
+	}
+}
+
+func (h *Handler) buildCostsAPIResponse() costsAPIResponse {
+	resp := costsAPIResponse{
+		Agents: make(map[string]agentAPIResponse),
+	}
+	if h.accumulator == nil {
+		return resp
+	}
+
+	resp.TotalCostUSD = h.accumulator.TotalCost()
+	grouped := h.accumulator.All()
+	for id, entries := range grouped {
+		agent := agentAPIResponse{}
+		for _, e := range entries {
+			agent.TotalRequests += e.RequestCount
+			agent.TotalCostUSD += e.TotalCostUSD
+			agent.Models = append(agent.Models, modelAPIResponse{
+				Provider:     e.Provider,
+				Model:        e.Model,
+				InputTokens:  e.TotalInputTokens,
+				OutputTokens: e.TotalOutputTokens,
+				CostUSD:      e.TotalCostUSD,
+				Requests:     e.RequestCount,
+			})
+		}
+		resp.Agents[id] = agent
+	}
+	return resp
 }
 
 func maskKey(key string) string {
