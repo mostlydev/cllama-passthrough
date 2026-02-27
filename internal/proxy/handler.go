@@ -175,6 +175,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var costInfo *logging.CostInfo
 	if h.accumulator != nil && h.pricing != nil {
 		captured := responseBuf.Bytes()
 		var usage cost.Usage
@@ -191,10 +192,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			h.accumulator.Record(agentID, providerName, upstreamModel,
 				usage.PromptTokens, usage.CompletionTokens, costUSD)
+			costInfo = &logging.CostInfo{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+				CostUSD:      costUSD,
+			}
 		}
 	}
 
-	h.logger.LogResponse(agentID, requestedModel, resp.StatusCode, time.Since(start).Milliseconds())
+	latency := time.Since(start).Milliseconds()
+	if costInfo != nil {
+		h.logger.LogResponseWithCost(agentID, requestedModel, resp.StatusCode, latency, costInfo)
+	} else {
+		h.logger.LogResponse(agentID, requestedModel, resp.StatusCode, latency)
+	}
 }
 
 func (h *Handler) fail(w http.ResponseWriter, status int, msg, clawID, model string, start time.Time, err error) {
