@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/logging"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
@@ -72,8 +73,10 @@ func TestDualServerIntegrationSmoke(t *testing.T) {
 	if err := reg.LoadFromFile(); err != nil {
 		t.Fatal(err)
 	}
-	apiHandler := newAPIHandler(contextRoot, reg, logging.New(io.Discard))
-	uiHandler := newUIHandler(reg)
+	pricing := cost.DefaultPricing()
+	acc := cost.NewAccumulator()
+	apiHandler := newAPIHandler(contextRoot, reg, logging.New(io.Discard), acc, pricing)
+	uiHandler := newUIHandler(reg, acc)
 
 	apiServer := &http.Server{Handler: apiHandler}
 	uiServer := &http.Server{Handler: uiHandler}

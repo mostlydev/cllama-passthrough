@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/logging"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 	"github.com/mostlydev/cllama-passthrough/internal/proxy"
@@ -56,14 +57,17 @@ func run(args []string, stdout, stderr io.Writer) error {
 	reg.LoadFromEnv()
 
 	logger := logging.New(stdout)
+	pricing := cost.DefaultPricing()
+	acc := cost.NewAccumulator()
+
 	apiServer := &http.Server{
 		Addr:              cfg.APIAddr,
-		Handler:           newAPIHandler(cfg.ContextRoot, reg, logger),
+		Handler:           newAPIHandler(cfg.ContextRoot, reg, logger, acc, pricing),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	uiServer := &http.Server{
 		Addr:              cfg.UIAddr,
-		Handler:           newUIHandler(reg),
+		Handler:           newUIHandler(reg, acc),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -94,11 +98,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func newAPIHandler(contextRoot string, reg *provider.Registry, logger *logging.Logger) http.Handler {
+func newAPIHandler(contextRoot string, reg *provider.Registry, logger *logging.Logger, acc *cost.Accumulator, pricing *cost.Pricing) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", proxy.NewHandler(reg, func(agentID string) (*agentctx.AgentContext, error) {
 		return agentctx.Load(contextRoot, agentID)
-	}, logger))
+	}, logger, proxy.WithCostTracking(acc, pricing)))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -106,9 +110,9 @@ func newAPIHandler(contextRoot string, reg *provider.Registry, logger *logging.L
 	return mux
 }
 
-func newUIHandler(reg *provider.Registry) http.Handler {
+func newUIHandler(reg *provider.Registry, acc *cost.Accumulator) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", ui.NewHandler(reg))
+	mux.Handle("/", ui.NewHandler(reg, ui.WithAccumulator(acc)))
 	return mux
 }
 
