@@ -1,0 +1,296 @@
+package proxy
+
+import (
+	"bytes"
+	"crypto/subtle"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
+	"github.com/mostlydev/cllama-passthrough/internal/identity"
+	"github.com/mostlydev/cllama-passthrough/internal/logging"
+	"github.com/mostlydev/cllama-passthrough/internal/provider"
+)
+
+// ContextLoader resolves per-agent context by ID.
+type ContextLoader func(agentID string) (*agentctx.AgentContext, error)
+
+// Handler proxies OpenAI-compatible chat requests to upstream providers.
+type Handler struct {
+	registry    *provider.Registry
+	loadContext ContextLoader
+	client      *http.Client
+	logger      *logging.Logger
+}
+
+func NewHandler(registry *provider.Registry, contextLoader ContextLoader, logger *logging.Logger) *Handler {
+	if registry == nil {
+		registry = provider.NewRegistry("")
+	}
+	if contextLoader == nil {
+		contextLoader = func(string) (*agentctx.AgentContext, error) {
+			return nil, fmt.Errorf("context loader not configured")
+		}
+	}
+	if logger == nil {
+		logger = logging.New(io.Discard)
+	}
+	return &Handler{
+		registry:    registry,
+		loadContext: contextLoader,
+		client:      &http.Client{},
+		logger:      logger,
+	}
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	if r.Method != http.MethodPost {
+		h.fail(w, http.StatusMethodNotAllowed, "method not allowed", "", "", start, nil)
+		return
+	}
+
+	agentID, secret, err := identity.ParseBearer(r.Header.Get("Authorization"))
+	if err != nil {
+		h.fail(w, http.StatusUnauthorized, "invalid bearer token", "", "", start, err)
+		return
+	}
+
+	ctx, err := h.loadContext(agentID)
+	if err != nil {
+		h.fail(w, http.StatusForbidden, "agent context not found", agentID, "", start, err)
+		return
+	}
+	if err := validateSecret(ctx, agentID, secret); err != nil {
+		h.fail(w, http.StatusForbidden, "invalid agent secret", agentID, "", start, err)
+		return
+	}
+
+	inBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.fail(w, http.StatusBadRequest, "failed to read request body", agentID, "", start, err)
+		return
+	}
+	defer r.Body.Close()
+
+	var payload map[string]any
+	if err := json.Unmarshal(inBody, &payload); err != nil {
+		h.fail(w, http.StatusBadRequest, "invalid JSON body", agentID, "", start, err)
+		return
+	}
+
+	requestedModel, _ := payload["model"].(string)
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		h.fail(w, http.StatusBadRequest, "missing model field", agentID, "", start, fmt.Errorf("missing model"))
+		return
+	}
+
+	providerName, upstreamModel, err := splitModel(requestedModel)
+	if err != nil {
+		h.fail(w, http.StatusBadRequest, err.Error(), agentID, requestedModel, start, err)
+		return
+	}
+
+	prov, err := h.registry.Get(providerName)
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "unknown provider", agentID, requestedModel, start, err)
+		return
+	}
+
+	payload["model"] = upstreamModel
+	outBody, err := json.Marshal(payload)
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "failed to encode upstream body", agentID, requestedModel, start, err)
+		return
+	}
+
+	targetURL, err := buildUpstreamURL(prov.BaseURL, r.URL.Path, r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "invalid provider URL", agentID, requestedModel, start, err)
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(outBody))
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "failed to create upstream request", agentID, requestedModel, start, err)
+		return
+	}
+	copyRequestHeaders(outReq.Header, r.Header)
+	outReq.Header.Set("Content-Type", "application/json")
+
+	switch strings.ToLower(strings.TrimSpace(prov.Auth)) {
+	case "", "bearer":
+		if strings.TrimSpace(prov.APIKey) == "" {
+			h.fail(w, http.StatusBadGateway, "provider API key not configured", agentID, requestedModel, start, fmt.Errorf("missing API key for %s", prov.Name))
+			return
+		}
+		outReq.Header.Set("Authorization", "Bearer "+prov.APIKey)
+	case "none":
+		outReq.Header.Del("Authorization")
+	default:
+		h.fail(w, http.StatusBadGateway, "unsupported provider auth", agentID, requestedModel, start, fmt.Errorf("unsupported auth mode: %s", prov.Auth))
+		return
+	}
+
+	h.logger.LogRequest(agentID, requestedModel)
+	resp, err := h.client.Do(outReq)
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "upstream request failed", agentID, requestedModel, start, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if err := streamBody(w, resp.Body); err != nil {
+		h.logger.LogError(agentID, requestedModel, resp.StatusCode, time.Since(start).Milliseconds(), err)
+		return
+	}
+
+	h.logger.LogResponse(agentID, requestedModel, resp.StatusCode, time.Since(start).Milliseconds())
+}
+
+func (h *Handler) fail(w http.ResponseWriter, status int, msg, clawID, model string, start time.Time, err error) {
+	writeJSONError(w, status, msg)
+	h.logger.LogError(clawID, model, status, time.Since(start).Milliseconds(), err)
+}
+
+func validateSecret(ctx *agentctx.AgentContext, agentID, presentedSecret string) error {
+	stored := strings.TrimSpace(ctx.MetadataToken())
+	if stored == "" {
+		return fmt.Errorf("metadata token missing")
+	}
+
+	if strings.HasPrefix(strings.ToLower(stored), "bearer ") {
+		stored = strings.TrimSpace(stored[7:])
+	}
+
+	storedAgent, storedSecret, hasColon := strings.Cut(stored, ":")
+	if hasColon {
+		if storedAgent != "" && storedAgent != agentID {
+			return fmt.Errorf("token agent mismatch")
+		}
+		if !constantTimeEqual(storedSecret, presentedSecret) {
+			return fmt.Errorf("secret mismatch")
+		}
+		return nil
+	}
+
+	if !constantTimeEqual(stored, presentedSecret) {
+		return fmt.Errorf("secret mismatch")
+	}
+	return nil
+}
+
+func splitModel(model string) (providerName, upstreamModel string, err error) {
+	providerName, upstreamModel, ok := strings.Cut(strings.TrimSpace(model), "/")
+	if !ok || providerName == "" || upstreamModel == "" {
+		return "", "", fmt.Errorf("model must be provider-prefixed: <provider>/<model>")
+	}
+	return strings.ToLower(providerName), upstreamModel, nil
+}
+
+func buildUpstreamURL(baseURL, incomingPath, rawQuery string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid base URL: %q", baseURL)
+	}
+
+	suffix := incomingPath
+	if !strings.HasPrefix(suffix, "/") {
+		suffix = "/" + suffix
+	}
+	if strings.HasPrefix(suffix, "/v1/") {
+		suffix = strings.TrimPrefix(suffix, "/v1")
+	} else if suffix == "/v1" {
+		suffix = "/"
+	}
+
+	u.Path = strings.TrimRight(u.Path, "/") + suffix
+	u.RawQuery = rawQuery
+	return u.String(), nil
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if isHopByHopHeader(k) || strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if isHopByHopHeader(k) {
+			continue
+		}
+		dst.Del(k)
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func isHopByHopHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	default:
+		return false
+	}
+}
+
+func streamBody(w http.ResponseWriter, body io.Reader) error {
+	flusher, _ := w.(http.Flusher)
+	if flusher == nil {
+		_, err := io.Copy(w, body)
+		return err
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			flusher.Flush()
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": msg,
+		},
+	})
+}
+
+func constantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cllama passthrough</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --ink: #111827;
+      --muted: #6b7280;
+      --line: #d1d5db;
+      --brand: #0f766e;
+      --danger: #b91c1c;
+      --panel: #ffffff;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+      background: radial-gradient(circle at top right, #e6fffa, var(--bg) 40%);
+      color: var(--ink);
+    }
+    main {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0 0 18px;
+      color: var(--muted);
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 28px rgba(17, 24, 39, 0.05);
+    }
+    form {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 4px;
+    }
+    input, select, button {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      box-sizing: border-box;
+      background: #fff;
+    }
+    button {
+      border: 0;
+      background: var(--brand);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .mono {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .danger {
+      background: var(--danger);
+    }
+    .inline {
+      display: inline;
+    }
+    .error {
+      margin-bottom: 14px;
+      color: var(--danger);
+      font-weight: 600;
+    }
+    @media (max-width: 860px) {
+      form {
+        grid-template-columns: 1fr;
+      }
+      th:nth-child(4), td:nth-child(4) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>cllama passthrough</h1>
+    <p>Provider registry management for the running proxy.</p>
+
+    {{if .Error}}
+    <div class="error">{{.Error}}</div>
+    {{end}}
+
+    <section class="panel">
+      <h2>Add or Update Provider</h2>
+      <form method="post" action="/providers">
+        <div>
+          <label for="name">Name</label>
+          <input id="name" name="name" placeholder="openai" required />
+        </div>
+        <div>
+          <label for="base_url">Base URL</label>
+          <input id="base_url" name="base_url" placeholder="https://api.openai.com/v1" />
+        </div>
+        <div>
+          <label for="api_key">API Key</label>
+          <input id="api_key" name="api_key" placeholder="sk-..." />
+        </div>
+        <div>
+          <label for="auth">Auth</label>
+          <select id="auth" name="auth">
+            <option value="bearer">bearer</option>
+            <option value="none">none</option>
+          </select>
+        </div>
+        <div>
+          <button type="submit">Save Provider</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Configured Providers</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Base URL</th>
+            <th>Auth</th>
+            <th>API Key</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Providers}}
+          <tr>
+            <td><span class="tag">{{.Name}}</span></td>
+            <td class="mono">{{.BaseURL}}</td>
+            <td>{{.Auth}}</td>
+            <td class="mono">{{.MaskedKey}}</td>
+            <td>
+              <form method="post" action="/providers" class="inline">
+                <input type="hidden" name="name" value="{{.Name}}" />
+                <input type="hidden" name="action" value="delete" />
+                <button class="danger" type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr>
+            <td colspan="5">No providers configured.</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
