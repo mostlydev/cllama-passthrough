@@ -1,116 +1,156 @@
 # cllama-passthrough
 
-An LLM proxy that sits between your AI agents and their model providers. It holds the real API keys so the agents don't have to.
+**The blood-brain barrier for autonomous agents.**
+
+`cllama-passthrough` is the reference implementation of the [cllama proxy standard](https://github.com/mostlydev/clawdapus/blob/master/docs/CLLAMA_SPEC.md) — a context-aware, bidirectional LLM governance proxy that enforces **credential starvation** on untrusted agent workloads.
+
+It is a single Go binary with zero dependencies. 15 MB distroless image. Two ports: `:8080` for the OpenAI-compatible API, `:8081` for the operator dashboard. Every agent request is identity-verified, provider-routed, cost-tracked, and audit-logged — transparently. The agent never knows the proxy exists.
 
 ```
-┌─────────┐         ┌──────────────┐         ┌──────────────┐
-│  agent   │──req──▶ │    cllama    │──req──▶ │   provider   │
-│          │◀─resp── │  passthrough │◀─resp── │  (OpenAI,    │
-│ (no real │         │              │         │  Anthropic,  │
-│  keys)   │  Bearer │ swaps token  │  real   │  OpenRouter, │
-│          │  token  │ for real key │  key    │  Ollama)     │
-└─────────┘         └──────────────┘         └──────────────┘
-                           │
-                     ┌─────┴─────┐
-                     │  :8081    │
-                     │  operator │
-                     │  dashboard│
-                     └───────────┘
+                         ┌──────────────────────────────────┐
+                         │         cllama-passthrough        │
+                         │                                  │
+  agent ──Bearer token──▶│  identity ─▶ route ─▶ swap key  │──real key──▶ provider
+  agent ◀──────response──│  extract usage ─▶ record cost    │◀──response── provider
+                         │                                  │
+                         │          :8081 dashboard          │
+                         │   providers · pod · costs · api   │
+                         └──────────────────────────────────┘
 ```
 
-## What problem does this solve?
+---
 
-If you're running AI agents on your homelab — bots that talk to LLMs, run on schedules, coordinate with each other — you have two problems:
+## The Architecture
 
-1. **Keys everywhere.** Every agent needs an API key. If you run three bots, that's three places your `ANTHROPIC_API_KEY` lives. One misconfigured container and your key leaks.
+A `cllama` proxy sits between the runner (the agent's application code) and the LLM provider. In the [Clawdapus](https://github.com/mostlydev/clawdapus) architecture, agents are treated as untrusted workloads — containers that can think, but whose compute access is a privilege granted by the operator, not a right assumed by the process.
 
-2. **Who's spending what?** When three agents share an OpenRouter account, your bill is one number. You can't tell which agent burned $4.50 on Sonnet calls and which one spent $0.02 on Haiku.
+**Credential starvation** is the enforcement mechanism. The agent container is provisioned with a unique bearer token (`<agent-id>:<48-hex-secret>`). The proxy holds the real provider API keys. Because the agent lacks the credentials to call providers directly, all inference *must* transit the proxy — even if a compromised agent tries to bypass its configured base URL.
 
-`cllama-passthrough` solves both. It's one process that holds all the real keys, hands each agent a unique dummy token, and tracks every request by agent, model, and cost.
+The "passthrough" reference performs no cognitive mutation. It verifies identity, routes to the correct upstream, swaps credentials, streams the response, extracts token usage, and records cost. Future proxy types (`cllama-policy`) will add bidirectional interception — evaluating outbound prompts against the agent's behavioral contract, and amending or dropping inbound responses that drift from purpose.
 
-This is **credential starvation** — the agent literally cannot call the LLM directly because it doesn't have the credentials. All inference must pass through the proxy.
+### Request lifecycle
 
-## How it works
+```
+1.  Agent sends POST /v1/chat/completions
+    Authorization: Bearer tiverton:a1b2c3d4e5f6...
+    {"model": "anthropic/claude-sonnet-4", "messages": [...]}
 
-1. Your agent sends a request to `http://cllama-passthrough:8080/v1/chat/completions` with `Authorization: Bearer tiverton:abc123...` and `"model": "anthropic/claude-sonnet-4"`.
-2. The proxy parses the bearer token, validates the secret against the agent's `metadata.json`, and identifies the caller.
-3. It splits the model on `/` — `anthropic` is the provider, `claude-sonnet-4` is the upstream model name.
-4. It swaps the dummy token for the real `ANTHROPIC_API_KEY` and forwards the request.
-5. The response streams back transparently. The agent never knows the proxy exists.
-6. Token usage is extracted from the response, multiplied by the pricing table, and recorded per agent.
+2.  Identity resolution
+    Parse bearer token → load /claw/context/tiverton/metadata.json
+    Validate secret (constant-time comparison)
 
-The proxy is OpenAI-compatible. Any tool that can talk to the OpenAI API works — just point its base URL at the proxy.
+3.  Provider routing
+    Split model on "/" → provider=anthropic, model=claude-sonnet-4
+    Look up provider config → base_url, auth scheme, real API key
 
-## Quick start
+4.  Credential swap
+    Strip agent's bearer token
+    Inject real key (Bearer, X-Api-Key, or none — per provider)
 
-### Build and run locally
+5.  Forward + stream
+    Proxy request to upstream, stream response back transparently
+
+6.  Cost extraction
+    Parse usage from response body (JSON or SSE stream)
+    Multiply by pricing table → record per (agent, provider, model)
+
+7.  Audit log
+    Emit structured JSON to stdout: timestamp, agent, model,
+    latency, status, tokens_in, tokens_out, cost_usd, intervention
+```
+
+---
+
+## Building
 
 ```bash
+# Binary
 go build -o cllama-passthrough ./cmd/cllama-passthrough
+
+# Docker (~15 MB distroless)
+docker build -t ghcr.io/mostlydev/cllama-passthrough:latest .
+```
+
+Zero external dependencies. Go standard library only.
+
+---
+
+## Running
+
+```bash
 ./cllama-passthrough
 ```
 
-API on `:8080`, dashboard on `:8081`. Open http://localhost:8081 to configure providers.
-
-### Docker
+Or with Docker:
 
 ```bash
-docker build -t cllama-passthrough .
-docker run -p 8080:8080 -p 8081:8081 cllama-passthrough
+docker run -p 8080:8080 -p 8081:8081 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e OPENROUTER_API_KEY=sk-or-... \
+  -v ./context:/claw/context:ro \
+  ghcr.io/mostlydev/cllama-passthrough:latest
 ```
 
-The image is ~15 MB (distroless, single static binary, no runtime dependencies).
+### Spike demo
 
-### Try the spike demo
-
-A self-contained demo that stands up a mock LLM backend, creates three trading-desk agents, fires a burst of requests, and leaves the dashboard running so you can poke around:
+A self-contained test that boots a mock LLM backend, creates three agents from the [trading-desk](https://github.com/mostlydev/clawdapus/tree/master/examples/trading-desk) reference pod, fires a burst of 16 requests across multiple providers, and leaves the dashboard running for inspection:
 
 ```bash
 go test -tags spike -v -run TestSpikeLiveDashboard ./cmd/cllama-passthrough/...
 ```
 
-Then open http://127.0.0.1:9081/ — you'll see providers, pod members, and cost breakdowns across three agents using different models and providers.
+Open `http://127.0.0.1:9081/` — three agents, four providers, real cost data. Ctrl-C to stop.
 
-Press Ctrl-C to stop.
+---
 
 ## Configuration
 
-### Environment variables
+### Environment
 
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| `LISTEN_ADDR` | `:8080` | API server bind address |
-| `UI_ADDR` | `:8081` | Operator dashboard bind address |
-| `CLAW_CONTEXT_ROOT` | `/claw/context` | Directory containing per-agent context |
-| `CLAW_AUTH_DIR` | `/claw/auth` | Directory for `providers.json` |
-| `CLAW_POD` | *(empty)* | Pod name (shown in dashboard) |
-| `OPENAI_API_KEY` | | Override for OpenAI provider key |
-| `ANTHROPIC_API_KEY` | | Override for Anthropic provider key |
-| `OPENROUTER_API_KEY` | | Override for OpenRouter provider key |
+| `LISTEN_ADDR` | `:8080` | API server |
+| `UI_ADDR` | `:8081` | Operator dashboard |
+| `CLAW_CONTEXT_ROOT` | `/claw/context` | Per-agent context mount |
+| `CLAW_AUTH_DIR` | `/claw/auth` | Provider credentials |
+| `CLAW_POD` | | Pod name (dashboard display) |
+| `OPENAI_API_KEY` | | Provider key override |
+| `ANTHROPIC_API_KEY` | | Provider key override |
+| `OPENROUTER_API_KEY` | | Provider key override |
 
-Provider keys can be set via env vars or via the web UI at `:8081`. Env vars take precedence.
+Environment variables override keys saved via the web UI.
 
-### Agent context directory
+### Agent context
 
-Each agent needs a subdirectory under `CLAW_CONTEXT_ROOT`:
+Each agent is a subdirectory under `CLAW_CONTEXT_ROOT`:
 
 ```
 /claw/context/
 ├── tiverton/
-│   ├── metadata.json    # {"token":"tiverton:abc123...","pod":"trading-desk","service":"tiverton","type":"openclaw"}
-│   ├── AGENTS.md        # behavioral contract
-│   └── CLAWDAPUS.md     # infrastructure map
+│   ├── metadata.json     # bearer token, pod, service, type
+│   ├── AGENTS.md         # behavioral contract
+│   └── CLAWDAPUS.md      # infrastructure map
 ├── westin/
 │   └── ...
 └── allen/
     └── ...
 ```
 
-The `token` field in `metadata.json` is what the agent sends as its bearer token. The proxy validates requests against it using constant-time comparison.
+`metadata.json`:
+```json
+{
+  "token": "tiverton:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "pod": "trading-desk",
+  "service": "tiverton",
+  "type": "openclaw"
+}
+```
 
-When orchestrated by [Clawdapus](https://github.com/mostlydev/clawdapus), all of this is generated automatically by `claw compose up`.
+When orchestrated by Clawdapus, `claw compose up` generates all of this — tokens via `crypto/rand`, context from the pod manifest, provider keys injected only into the proxy env.
 
-### Provider registry (`providers.json`)
+### Provider registry
+
+`providers.json` in `CLAW_AUTH_DIR`:
 
 ```json
 {
@@ -133,61 +173,103 @@ When orchestrated by [Clawdapus](https://github.com/mostlydev/clawdapus), all of
 }
 ```
 
-Auth modes: `bearer` (Authorization header), `x-api-key` (Anthropic's header), `none` (local models like Ollama).
+Auth schemes: `bearer` (OpenAI, OpenRouter), `x-api-key` (Anthropic), `none` (Ollama, local models).
 
-## Operator dashboard
+---
 
-The built-in web UI on `:8081` has three pages:
+## Operator Dashboard
 
-- **Providers** (`/`) — Add, update, and delete upstream provider configs. Shows a routing diagram explaining how model names map to providers.
-- **Pod** (`/pod`) — Lists registered agents with their type, request count, cost, and models used.
-- **Costs** (`/costs`) — Real-time spend dashboard. Total spend banner, per-agent breakdown with nested model detail rows.
-- **Costs API** (`GET /costs/api`) — JSON endpoint for Grafana, alerting, or scripts.
+Built-in web UI on `:8081`. No JavaScript frameworks, no build step — Go templates compiled into the binary.
 
-Cost data lives in memory and resets on restart. The structured JSON logs on stdout are the durable audit record.
+| Page | Path | Function |
+|---|---|---|
+| Providers | `/` | Manage upstream provider configs. Routing diagram. Add/update/delete. |
+| Pod | `/pod` | Agent cards — type, request count, cost, models used. |
+| Costs | `/costs` | Real-time spend. Total banner, per-agent breakdown, nested model detail. |
+| Costs API | `/costs/api` | JSON. Pipe to Grafana, alerting, `jq`, or the Master Claw. |
 
-## API endpoints
+Cost state is in-memory — resets on restart. Structured logs on stdout are the durable audit record.
+
+---
+
+## API Surface
+
+**`:8080` — Proxy API**
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | OpenAI-compatible chat proxy (`:8080`) |
-| `POST` | `/v1/messages` | Anthropic native messages proxy (`:8080`) |
-| `GET` | `/health` | Health check — returns `{"ok": true}` (`:8080`) |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions |
+| `POST` | `/v1/messages` | Anthropic Messages API (native format) |
+| `GET` | `/health` | `{"ok": true}` |
 
-## Structured logging
+Both endpoints support streaming. The Anthropic endpoint forwards `Anthropic-Version` and `Anthropic-Beta` headers and uses `X-Api-Key` authentication automatically.
 
-Every request produces a JSON log line on stdout:
+---
+
+## Audit Logging
+
+Every request/response pair emits a structured JSON log line to stdout:
 
 ```json
-{"ts":"2026-02-27T15:23:45Z","claw_id":"tiverton","type":"response","model":"anthropic/claude-sonnet-4","latency_ms":1250,"status_code":200,"tokens_in":100,"tokens_out":50,"cost_usd":0.0105,"intervention":null}
+{
+  "ts": "2026-02-27T15:23:45Z",
+  "claw_id": "tiverton",
+  "type": "response",
+  "model": "anthropic/claude-sonnet-4",
+  "latency_ms": 1250,
+  "status_code": 200,
+  "tokens_in": 100,
+  "tokens_out": 50,
+  "cost_usd": 0.0105,
+  "intervention": null
+}
 ```
 
-The `intervention` field is always `null` in passthrough mode. Future policy proxies (`cllama-policy`) will populate it when they drop, amend, or reroute requests.
+`intervention` is always `null` in passthrough mode. Policy proxies will populate it with the rule that triggered an amendment, drop, or reroute — the raw material for drift scoring.
 
-These logs are designed for `docker compose logs`, fleet telemetry pipelines, and the `claw audit` command.
+These logs feed `docker compose logs`, fleet telemetry pipelines, and `claw audit`.
+
+---
+
+## The cllama Standard
+
+`cllama` is an open standard for context-aware LLM governance proxies. Any OpenAI-compatible proxy image that can consume Clawdapus context can act as a governance layer. The [full specification](https://github.com/mostlydev/clawdapus/blob/master/docs/CLLAMA_SPEC.md) defines:
+
+- **Bidirectional interception** — outbound prompt evaluation, inbound response amendment
+- **Multi-agent identity** — single proxy serves an entire pod, resolving callers by bearer token
+- **Compute metering** — per-agent budgets, model downgrading, rate limiting
+- **Structured telemetry** — intervention logs for independent drift scoring
+
+The passthrough reference implements the transport layer: identity, routing, cost tracking, audit logging. It establishes the plumbing that policy proxies build on.
+
+```
+raw cognition → [passthrough: route, meter, log] → provider
+                         ↓ future
+raw cognition → [policy: scope, gate, amend] → [passthrough: route, meter, log] → provider
+```
+
+---
 
 ## Part of Clawdapus
 
-This proxy is one layer in the [Clawdapus](https://github.com/mostlydev/clawdapus) stack — infrastructure-layer governance for AI agent containers. The full picture:
+This proxy is one component in [Clawdapus](https://github.com/mostlydev/clawdapus) — infrastructure-layer governance for AI agent containers. Docker on Rails for Claws.
 
 ```
-Clawfile          → extended Dockerfile (agent image)
-claw-pod.yml      → extended docker-compose (agent fleet)
-claw compose up   → builds images, generates configs, wires cllama, runs fleet
-cllama-passthrough → LLM proxy with credential starvation + cost tracking
+Clawfile            extended Dockerfile → OCI image
+claw-pod.yml        extended docker-compose → governed fleet
+claw compose up     transpile, enforce, wire cllama, deploy
+cllama-passthrough  credential starvation + cost accounting + audit trail
 ```
 
-In a Clawdapus pod, `claw compose up` handles everything automatically:
-- Generates per-agent bearer tokens via `crypto/rand`
-- Rewrites agent model configs to point at the proxy
-- Mounts agent contracts and context into the proxy
-- Injects real provider keys only into the proxy's env (never the agent's)
+Standalone operation is fully supported. Set up the context directory, write a `providers.json`, point your agents at `:8080`, and the proxy does the rest.
 
-You can also run `cllama-passthrough` standalone — just set up the context directory and `providers.json` manually, point your agents at it, and go.
+---
 
-## What's next
+## Roadmap
 
-- **Budget enforcement** — Hard spend caps per agent. When exceeded, the proxy returns `429` instead of forwarding. The agent's budget is a configuration concern, not a prompt concern.
-- **Model allowlisting** — Restrict which models each agent can request.
-- **Persistent cost state** — Survive restarts without losing the running total.
-- **`cllama-policy`** — A second proxy type that reads the agent's behavioral contract and makes allow/deny/amend decisions on the LLM traffic. The passthrough establishes the plumbing; the policy proxy adds the brain.
+| Feature | Description |
+|---|---|
+| **Budget enforcement** | Hard spend caps per agent. `429` when exceeded. The agent's budget is a configuration concern, not a prompt concern. |
+| **Model allowlisting** | Per-agent model ACLs from `metadata.json`. |
+| **Persistent cost state** | Survive restarts. Rebuild from audit logs or external store. |
+| **`cllama-policy`** | Bidirectional interception. Reads the behavioral contract. Makes allow/deny/amend decisions on live LLM traffic. The passthrough is the plumbing; the policy proxy is the brain. |
