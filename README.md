@@ -133,7 +133,7 @@ Each agent is a subdirectory under `CLAW_CONTEXT_ROOT`:
 }
 ```
 
-When orchestrated by Clawdapus, `claw compose up` generates all of this — tokens via `crypto/rand`, context from the pod manifest, provider keys injected only into the proxy env.
+When orchestrated by Clawdapus, `claw up` generates all of this — tokens via `crypto/rand`, context from the pod manifest, provider keys injected only into the proxy env.
 
 ### Provider registry
 
@@ -251,7 +251,7 @@ This proxy is one component in [Clawdapus](https://github.com/mostlydev/clawdapu
 ```
 Clawfile            extended Dockerfile → OCI image
 claw-pod.yml        extended docker-compose → governed fleet
-claw compose up     transpile, enforce, wire cllama, deploy
+claw up     transpile, enforce, wire cllama, deploy
 cllama-passthrough  credential starvation + cost accounting + audit trail
 ```
 
