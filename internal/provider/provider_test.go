@@ -23,6 +23,12 @@ func TestRegistryFromEnv(t *testing.T) {
 	if p.BaseURL != "https://api.openai.com/v1" {
 		t.Errorf("unexpected openai base URL: %q", p.BaseURL)
 	}
+	if p.Auth != "bearer" {
+		t.Errorf("expected openai auth=bearer, got %q", p.Auth)
+	}
+	if p.APIFormat != "openai" {
+		t.Errorf("expected openai api_format=openai, got %q", p.APIFormat)
+	}
 
 	p, err = r.Get("anthropic")
 	if err != nil {
@@ -30,6 +36,12 @@ func TestRegistryFromEnv(t *testing.T) {
 	}
 	if p.APIKey != "sk-ant-test" {
 		t.Errorf("expected anthropic key, got %q", p.APIKey)
+	}
+	if p.Auth != "x-api-key" {
+		t.Errorf("expected anthropic auth=x-api-key, got %q", p.Auth)
+	}
+	if p.APIFormat != "anthropic" {
+		t.Errorf("expected anthropic api_format=anthropic, got %q", p.APIFormat)
 	}
 }
 

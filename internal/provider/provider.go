@@ -12,10 +12,11 @@ import (
 
 // Provider holds auth and routing config for one LLM provider.
 type Provider struct {
-	Name    string `json:"name,omitempty"`
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key,omitempty"`
-	Auth    string `json:"auth,omitempty"` // bearer (default) or none
+	Name      string `json:"name,omitempty"`
+	BaseURL   string `json:"base_url"`
+	APIKey    string `json:"api_key,omitempty"`
+	Auth      string `json:"auth,omitempty"`       // "bearer" (default), "none", "x-api-key"
+	APIFormat string `json:"api_format,omitempty"` // "openai" (default), "anthropic"
 }
 
 // Registry manages known providers; it is safe for concurrent use.
@@ -88,6 +89,9 @@ func (r *Registry) LoadFromFile() error {
 		if cp.Auth == "" {
 			cp.Auth = defaultAuth(n)
 		}
+		if cp.APIFormat == "" {
+			cp.APIFormat = defaultAPIFormat(n)
+		}
 		r.providers[n] = &cp
 	}
 
@@ -107,7 +111,7 @@ func (r *Registry) LoadFromEnv() {
 		}
 		p, ok := r.providers[provName]
 		if !ok {
-			p = &Provider{Name: provName, Auth: defaultAuth(provName)}
+			p = &Provider{Name: provName, Auth: defaultAuth(provName), APIFormat: defaultAPIFormat(provName)}
 		}
 		p.BaseURL = v
 		r.providers[provName] = p
@@ -120,13 +124,16 @@ func (r *Registry) LoadFromEnv() {
 		}
 		p, ok := r.providers[provName]
 		if !ok {
-			p = &Provider{Name: provName, BaseURL: knownProviders[provName], Auth: defaultAuth(provName)}
+			p = &Provider{Name: provName, BaseURL: knownProviders[provName], Auth: defaultAuth(provName), APIFormat: defaultAPIFormat(provName)}
 		}
 		if p.BaseURL == "" {
 			p.BaseURL = knownProviders[provName]
 		}
 		if p.Auth == "" {
 			p.Auth = defaultAuth(provName)
+		}
+		if p.APIFormat == "" {
+			p.APIFormat = defaultAPIFormat(provName)
 		}
 		p.APIKey = v
 		r.providers[provName] = p
@@ -145,6 +152,9 @@ func (r *Registry) Set(name string, p *Provider) {
 	}
 	if cp.Auth == "" {
 		cp.Auth = defaultAuth(n)
+	}
+	if cp.APIFormat == "" {
+		cp.APIFormat = defaultAPIFormat(n)
 	}
 	r.mu.Lock()
 	r.providers[n] = &cp
@@ -212,10 +222,11 @@ func (r *Registry) SaveToFile() error {
 	providers := make(map[string]Provider, len(r.providers))
 	for name, p := range r.providers {
 		providers[name] = Provider{
-			Name:    "",
-			BaseURL: p.BaseURL,
-			APIKey:  p.APIKey,
-			Auth:    p.Auth,
+			Name:      "",
+			BaseURL:   p.BaseURL,
+			APIKey:    p.APIKey,
+			Auth:      p.Auth,
+			APIFormat: p.APIFormat,
 		}
 	}
 	r.mu.RUnlock()
@@ -239,8 +250,19 @@ func normalizeName(name string) string {
 }
 
 func defaultAuth(provider string) string {
-	if normalizeName(provider) == "ollama" {
+	switch normalizeName(provider) {
+	case "ollama":
 		return "none"
+	case "anthropic":
+		return "x-api-key"
+	default:
+		return "bearer"
 	}
-	return "bearer"
+}
+
+func defaultAPIFormat(provider string) string {
+	if normalizeName(provider) == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
 }
