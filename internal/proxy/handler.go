@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/identity"
 	"github.com/mostlydev/cllama-passthrough/internal/logging"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
@@ -26,9 +27,22 @@ type Handler struct {
 	loadContext ContextLoader
 	client      *http.Client
 	logger      *logging.Logger
+	accumulator *cost.Accumulator
+	pricing     *cost.Pricing
 }
 
-func NewHandler(registry *provider.Registry, contextLoader ContextLoader, logger *logging.Logger) *Handler {
+// HandlerOption configures optional Handler behaviour.
+type HandlerOption func(*Handler)
+
+// WithCostTracking enables per-request cost recording.
+func WithCostTracking(acc *cost.Accumulator, pricing *cost.Pricing) HandlerOption {
+	return func(h *Handler) {
+		h.accumulator = acc
+		h.pricing = pricing
+	}
+}
+
+func NewHandler(registry *provider.Registry, contextLoader ContextLoader, logger *logging.Logger, opts ...HandlerOption) *Handler {
 	if registry == nil {
 		registry = provider.NewRegistry("")
 	}
@@ -40,12 +54,16 @@ func NewHandler(registry *provider.Registry, contextLoader ContextLoader, logger
 	if logger == nil {
 		logger = logging.New(io.Discard)
 	}
-	return &Handler{
+	h := &Handler{
 		registry:    registry,
 		loadContext: contextLoader,
 		client:      &http.Client{},
 		logger:      logger,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -149,9 +167,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	if err := streamBody(w, resp.Body); err != nil {
+
+	var responseBuf bytes.Buffer
+	tee := io.TeeReader(resp.Body, &responseBuf)
+	if err := streamBody(w, tee); err != nil {
 		h.logger.LogError(agentID, requestedModel, resp.StatusCode, time.Since(start).Milliseconds(), err)
 		return
+	}
+
+	if h.accumulator != nil && h.pricing != nil {
+		captured := responseBuf.Bytes()
+		var usage cost.Usage
+		if isSSE(resp.Header) {
+			usage, _ = cost.ExtractUsageFromSSE(captured)
+		} else {
+			usage, _ = cost.ExtractUsage(captured)
+		}
+		if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
+			rate, ok := h.pricing.Lookup(providerName, upstreamModel)
+			costUSD := 0.0
+			if ok {
+				costUSD = rate.Compute(usage.PromptTokens, usage.CompletionTokens)
+			}
+			h.accumulator.Record(agentID, providerName, upstreamModel,
+				usage.PromptTokens, usage.CompletionTokens, costUSD)
+		}
 	}
 
 	h.logger.LogResponse(agentID, requestedModel, resp.StatusCode, time.Since(start).Milliseconds())
@@ -251,6 +291,10 @@ func isHopByHopHeader(name string) bool {
 	default:
 		return false
 	}
+}
+
+func isSSE(h http.Header) bool {
+	return strings.Contains(h.Get("Content-Type"), "text/event-stream")
 }
 
 func streamBody(w http.ResponseWriter, body io.Reader) error {

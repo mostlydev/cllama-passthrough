@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
+	"github.com/mostlydev/cllama-passthrough/internal/cost"
+	"github.com/mostlydev/cllama-passthrough/internal/logging"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
 
@@ -93,6 +95,93 @@ func TestHandlerRejectsWrongSecret(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for wrong secret, got %d", w.Code)
+	}
+}
+
+func TestHandlerRecordsCost(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "chatcmpl-1",
+			"choices": [{"message": {"content": "hello"}}],
+			"usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+		}`))
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry("")
+	reg.Set("anthropic", &provider.Provider{
+		Name: "anthropic", BaseURL: backend.URL, APIKey: "sk-real", Auth: "bearer",
+	})
+
+	acc := cost.NewAccumulator()
+	pricing := cost.DefaultPricing()
+	h := NewHandler(reg, stubContextLoaderWithToken("tiverton", "tiverton:dummy123"), logging.New(io.Discard),
+		WithCostTracking(acc, pricing))
+
+	body := `{"model":"anthropic/claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer tiverton:dummy123")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entries := acc.ByAgent("tiverton")
+	if len(entries) == 0 {
+		t.Fatal("expected cost entry recorded")
+	}
+	if entries[0].TotalInputTokens != 100 {
+		t.Errorf("expected 100 input tokens, got %d", entries[0].TotalInputTokens)
+	}
+	if entries[0].TotalOutputTokens != 50 {
+		t.Errorf("expected 50 output tokens, got %d", entries[0].TotalOutputTokens)
+	}
+	if entries[0].TotalCostUSD <= 0 {
+		t.Error("expected positive cost")
+	}
+}
+
+func TestHandlerRecordsCostFromSSE(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":200,\"completion_tokens\":80,\"total_tokens\":280}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry("")
+	reg.Set("openai", &provider.Provider{
+		Name: "openai", BaseURL: backend.URL, APIKey: "sk-real", Auth: "bearer",
+	})
+
+	acc := cost.NewAccumulator()
+	pricing := cost.DefaultPricing()
+	h := NewHandler(reg, stubContextLoaderWithToken("tiverton", "tiverton:dummy123"), logging.New(io.Discard),
+		WithCostTracking(acc, pricing))
+
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer tiverton:dummy123")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entries := acc.ByAgent("tiverton")
+	if len(entries) == 0 {
+		t.Fatal("expected cost entry recorded for SSE response")
+	}
+	if entries[0].TotalInputTokens != 200 {
+		t.Errorf("expected 200 input tokens, got %d", entries[0].TotalInputTokens)
+	}
+	if entries[0].TotalCostUSD <= 0 {
+		t.Error("expected positive cost")
 	}
 }
 
