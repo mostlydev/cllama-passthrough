@@ -3,11 +3,13 @@ package ui
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
 	"github.com/mostlydev/cllama-passthrough/internal/cost"
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
@@ -26,9 +28,17 @@ func WithAccumulator(acc *cost.Accumulator) UIOption {
 	}
 }
 
+// WithContextRoot sets the agent context directory for pod member listing.
+func WithContextRoot(root string) UIOption {
+	return func(h *Handler) {
+		h.contextRoot = root
+	}
+}
+
 type Handler struct {
 	registry    *provider.Registry
 	accumulator *cost.Accumulator
+	contextRoot string
 	tpl         *template.Template
 }
 
@@ -47,8 +57,10 @@ type pageData struct {
 // -- costs page types --
 
 type costsPageData struct {
-	TotalCostUSD float64
-	Agents       []agentCostRow
+	TotalCostUSD  float64
+	TotalRequests int
+	TotalTokens   int
+	Agents        []agentCostRow
 }
 
 type agentCostRow struct {
@@ -67,6 +79,22 @@ type modelCostRow struct {
 	TokensIn  int
 	TokensOut int
 	CostUSD   float64
+}
+
+// -- pod page types --
+
+type podPageData struct {
+	PodName string
+	Members []podMemberRow
+}
+
+type podMemberRow struct {
+	AgentID       string
+	Service       string
+	Type          string
+	TotalRequests int
+	TotalCostUSD  float64
+	Models        []string // models seen in live traffic
 }
 
 // -- costs API types --
@@ -110,6 +138,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case r.Method == http.MethodPost && r.URL.Path == "/providers":
 		h.handleProviderUpdate(w, r)
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/pod":
+		h.renderPod(w)
 		return
 	case r.Method == http.MethodGet && r.URL.Path == "/costs":
 		h.renderCosts(w)
@@ -232,9 +263,17 @@ func (h *Handler) buildCostsPageData() costsPageData {
 		agents = append(agents, row)
 	}
 
+	var totalReqs, totalToks int
+	for _, a := range agents {
+		totalReqs += a.TotalRequests
+		totalToks += a.TotalTokensIn + a.TotalTokensOut
+	}
+
 	return costsPageData{
-		TotalCostUSD: h.accumulator.TotalCost(),
-		Agents:       agents,
+		TotalCostUSD:  h.accumulator.TotalCost(),
+		TotalRequests: totalReqs,
+		TotalTokens:   totalToks,
+		Agents:        agents,
 	}
 }
 
@@ -265,6 +304,56 @@ func (h *Handler) buildCostsAPIResponse() costsAPIResponse {
 		resp.Agents[id] = agent
 	}
 	return resp
+}
+
+func (h *Handler) renderPod(w http.ResponseWriter) {
+	data := h.buildPodPageData()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = h.tpl.ExecuteTemplate(w, "pod.html", data)
+}
+
+func (h *Handler) buildPodPageData() podPageData {
+	var members []podMemberRow
+	var podName string
+
+	if h.contextRoot != "" {
+		agents, err := agentctx.ListAgents(h.contextRoot)
+		if err == nil {
+			for _, a := range agents {
+				if podName == "" && a.Pod != "" {
+					podName = a.Pod
+				}
+				m := podMemberRow{
+					AgentID: a.AgentID,
+					Service: a.Service,
+					Type:    a.Type,
+				}
+
+				// merge live cost data if accumulator available
+				if h.accumulator != nil {
+					entries := h.accumulator.ByAgent(a.AgentID)
+					seen := make(map[string]bool)
+					for _, e := range entries {
+						m.TotalRequests += e.RequestCount
+						m.TotalCostUSD += e.TotalCostUSD
+						modelKey := fmt.Sprintf("%s/%s", e.Provider, e.Model)
+						if !seen[modelKey] {
+							m.Models = append(m.Models, modelKey)
+							seen[modelKey] = true
+						}
+					}
+				}
+
+				members = append(members, m)
+			}
+		}
+	}
+
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].AgentID < members[j].AgentID
+	})
+
+	return podPageData{PodName: podName, Members: members}
 }
 
 func maskKey(key string) string {

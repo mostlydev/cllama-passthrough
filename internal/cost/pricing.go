@@ -18,13 +18,30 @@ type Pricing struct {
 }
 
 // Lookup returns the rate for a provider/model pair.
+// It tries exact match first, then prefix match (e.g. "claude-sonnet-4"
+// matches "claude-sonnet-4-20250514") to handle date-suffixed model IDs.
 func (p *Pricing) Lookup(provider, model string) (Rate, bool) {
 	models, ok := p.rates[provider]
 	if !ok {
 		return Rate{}, false
 	}
-	rate, ok := models[model]
-	return rate, ok
+	// Exact match first.
+	if rate, ok := models[model]; ok {
+		return rate, true
+	}
+	// Prefix match: find the longest key that is a prefix of model.
+	var best Rate
+	bestLen := 0
+	for key, rate := range models {
+		if len(key) > bestLen && len(key) <= len(model) && model[:len(key)] == key {
+			best = rate
+			bestLen = len(key)
+		}
+	}
+	if bestLen > 0 {
+		return best, true
+	}
+	return Rate{}, false
 }
 
 // DefaultPricing returns a pricing table with well-known models.
@@ -34,6 +51,7 @@ func DefaultPricing() *Pricing {
 		"anthropic": {
 			"claude-sonnet-4":   {InputPerMTok: 3.0, OutputPerMTok: 15.0},
 			"claude-sonnet-4-6": {InputPerMTok: 3.0, OutputPerMTok: 15.0},
+			"claude-haiku-3-5":  {InputPerMTok: 0.80, OutputPerMTok: 4.0},
 			"claude-haiku-4-5":  {InputPerMTok: 0.80, OutputPerMTok: 4.0},
 			"claude-opus-4":     {InputPerMTok: 15.0, OutputPerMTok: 75.0},
 			"claude-opus-4-6":   {InputPerMTok: 15.0, OutputPerMTok: 75.0},
@@ -47,6 +65,12 @@ func DefaultPricing() *Pricing {
 			"o3":           {InputPerMTok: 2.0, OutputPerMTok: 8.0},
 			"o4-mini":      {InputPerMTok: 1.10, OutputPerMTok: 4.40},
 		},
-		"openrouter": {},
+		"openrouter": {
+			// OpenRouter passes through to upstream providers; rates match origin pricing.
+			"anthropic/claude-sonnet-4":   {InputPerMTok: 3.0, OutputPerMTok: 15.0},
+			"anthropic/claude-haiku-3-5":  {InputPerMTok: 0.80, OutputPerMTok: 4.0},
+			"google/gemini-2.5-pro":       {InputPerMTok: 1.25, OutputPerMTok: 10.0},
+			"google/gemini-2.5-flash":     {InputPerMTok: 0.15, OutputPerMTok: 0.60},
+		},
 	}}
 }

@@ -67,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	uiServer := &http.Server{
 		Addr:              cfg.UIAddr,
-		Handler:           newUIHandler(reg, acc),
+		Handler:           newUIHandler(reg, acc, cfg.ContextRoot),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -110,9 +110,9 @@ func newAPIHandler(contextRoot string, reg *provider.Registry, logger *logging.L
 	return mux
 }
 
-func newUIHandler(reg *provider.Registry, acc *cost.Accumulator) http.Handler {
+func newUIHandler(reg *provider.Registry, acc *cost.Accumulator, contextRoot string) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", ui.NewHandler(reg, ui.WithAccumulator(acc)))
+	mux.Handle("/", ui.NewHandler(reg, ui.WithAccumulator(acc), ui.WithContextRoot(contextRoot)))
 	return mux
 }
 
