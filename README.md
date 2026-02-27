@@ -6,16 +6,13 @@
 
 It is a single Go binary with zero dependencies. 15 MB distroless image. Two ports: `:8080` for the OpenAI-compatible API, `:8081` for the operator dashboard. Every agent request is identity-verified, provider-routed, cost-tracked, and audit-logged — transparently. The agent never knows the proxy exists.
 
-```
-                         ┌──────────────────────────────────┐
-                         │         cllama-passthrough        │
-                         │                                  │
-  agent ──Bearer token──▶│  identity ─▶ route ─▶ swap key  │──real key──▶ provider
-  agent ◀──────response──│  extract usage ─▶ record cost    │◀──response── provider
-                         │                                  │
-                         │          :8081 dashboard          │
-                         │   providers · pod · costs · api   │
-                         └──────────────────────────────────┘
+```mermaid
+flowchart LR
+  A[Agent<br/><i>bearer token</i>] -->|request| P[cllama-passthrough<br/><b>identity → route → swap key</b><br/><i>extract usage → record cost</i>]
+  P -->|real key| U[Provider<br/><i>OpenAI · Anthropic<br/>OpenRouter · Ollama</i>]
+  U -->|response| P
+  P -->|response| A
+  P --- D[:8081 dashboard<br/><i>providers · pod · costs · api</i>]
 ```
 
 ---
@@ -242,10 +239,17 @@ These logs feed `docker compose logs`, fleet telemetry pipelines, and `claw audi
 
 The passthrough reference implements the transport layer: identity, routing, cost tracking, audit logging. It establishes the plumbing that policy proxies build on.
 
-```
-raw cognition → [passthrough: route, meter, log] → provider
-                         ↓ future
-raw cognition → [policy: scope, gate, amend] → [passthrough: route, meter, log] → provider
+```mermaid
+flowchart LR
+  subgraph today[Today]
+    direction LR
+    R1[runner] --> PT1[passthrough<br/><i>route · meter · log</i>] --> P1[provider]
+  end
+
+  subgraph future[Future]
+    direction LR
+    R2[runner] --> PO[policy<br/><i>scope · gate · amend</i>] --> PT2[passthrough<br/><i>route · meter · log</i>] --> P2[provider]
+  end
 ```
 
 ---
