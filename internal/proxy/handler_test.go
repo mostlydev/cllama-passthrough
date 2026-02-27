@@ -185,6 +185,87 @@ func TestHandlerRecordsCostFromSSE(t *testing.T) {
 	}
 }
 
+func TestHandlerForwardsAnthropicMessages(t *testing.T) {
+	var gotAPIKey string
+	var gotVersion string
+	var gotBeta string
+	var gotAuth string
+	var gotBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("X-Api-Key")
+		gotVersion = r.Header.Get("Anthropic-Version")
+		gotBeta = r.Header.Get("Anthropic-Beta")
+		gotAuth = r.Header.Get("Authorization")
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_01","type":"message","content":[{"type":"text","text":"hello"}]}`))
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry("")
+	reg.Set("anthropic", &provider.Provider{
+		Name: "anthropic", BaseURL: backend.URL + "/v1", APIKey: "sk-ant-real", Auth: "x-api-key", APIFormat: "anthropic",
+	})
+
+	h := NewHandler(reg, stubContextLoaderWithToken("nano-bot", "nano-bot:dummy456"), nil)
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer nano-bot:dummy456")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	// Should use x-api-key, NOT bearer auth
+	if gotAPIKey != "sk-ant-real" {
+		t.Errorf("expected x-api-key=sk-ant-real, got %q", gotAPIKey)
+	}
+	if gotAuth != "" {
+		t.Errorf("expected no Authorization header for x-api-key auth, got %q", gotAuth)
+	}
+	// Anthropic headers should be forwarded
+	if gotVersion != "2023-06-01" {
+		t.Errorf("expected anthropic-version=2023-06-01, got %q", gotVersion)
+	}
+	if gotBeta != "prompt-caching-2024-07-31" {
+		t.Errorf("expected anthropic-beta forwarded, got %q", gotBeta)
+	}
+	// Model should NOT be provider-prefixed (Anthropic models have no prefix)
+	if len(gotBody) == 0 {
+		t.Fatal("backend received empty body")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("unmarshal backend body: %v", err)
+	}
+	if payload["model"] != "claude-sonnet-4-20250514" {
+		t.Errorf("expected model unchanged, got %#v", payload["model"])
+	}
+}
+
+func TestHandlerAnthropicRejectsUnknownAgent(t *testing.T) {
+	reg := provider.NewRegistry("")
+	reg.Set("anthropic", &provider.Provider{Name: "anthropic", BaseURL: "https://api.anthropic.com/v1", APIKey: "sk-real", Auth: "x-api-key"})
+	h := NewHandler(reg, stubContextLoaderWithToken("nano-bot", "nano-bot:correct"), nil)
+	body := `{"model":"claude-sonnet-4-20250514","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer unknown-agent:wrong-secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for unknown agent, got %d", w.Code)
+	}
+}
+
 func stubContextLoaderWithToken(agentID, token string) ContextLoader {
 	return func(id string) (*agentctx.AgentContext, error) {
 		if id != agentID {

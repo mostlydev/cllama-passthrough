@@ -90,6 +90,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Route based on path: /v1/messages → Anthropic flow, everything else → OpenAI flow
+	if strings.HasPrefix(r.URL.Path, "/v1/messages") {
+		h.handleAnthropicMessages(w, r, agentID, start)
+		return
+	}
+
+	h.handleOpenAI(w, r, agentID, start)
+}
+
+func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, agentID string, start time.Time) {
 	inBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.fail(w, http.StatusBadRequest, "failed to read request body", agentID, "", start, err)
@@ -143,20 +153,103 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyRequestHeaders(outReq.Header, r.Header)
 	outReq.Header.Set("Content-Type", "application/json")
 
+	if err := h.setProviderAuth(outReq, prov, agentID, requestedModel, start, w); err != nil {
+		return // error already written
+	}
+
+	h.proxyAndLog(w, outReq, agentID, providerName, requestedModel, upstreamModel, start)
+}
+
+func (h *Handler) handleAnthropicMessages(w http.ResponseWriter, r *http.Request, agentID string, start time.Time) {
+	inBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.fail(w, http.StatusBadRequest, "failed to read request body", agentID, "", start, err)
+		return
+	}
+	defer r.Body.Close()
+
+	var payload map[string]any
+	if err := json.Unmarshal(inBody, &payload); err != nil {
+		h.fail(w, http.StatusBadRequest, "invalid JSON body", agentID, "", start, err)
+		return
+	}
+
+	requestedModel, _ := payload["model"].(string)
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		h.fail(w, http.StatusBadRequest, "missing model field", agentID, "", start, fmt.Errorf("missing model"))
+		return
+	}
+
+	// Anthropic models don't use provider prefix — route directly to "anthropic" provider
+	prov, err := h.registry.Get("anthropic")
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "anthropic provider not configured", agentID, requestedModel, start, err)
+		return
+	}
+
+	outBody, err := json.Marshal(payload)
+	if err != nil {
+		h.fail(w, http.StatusInternalServerError, "failed to encode upstream body", agentID, requestedModel, start, err)
+		return
+	}
+
+	targetURL, err := buildUpstreamURL(prov.BaseURL, r.URL.Path, r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "invalid provider URL", agentID, requestedModel, start, err)
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(outBody))
+	if err != nil {
+		h.fail(w, http.StatusBadGateway, "failed to create upstream request", agentID, requestedModel, start, err)
+		return
+	}
+	copyRequestHeaders(outReq.Header, r.Header)
+	outReq.Header.Set("Content-Type", "application/json")
+
+	// Forward Anthropic-specific headers
+	for _, hdr := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+		if v := r.Header.Get(hdr); v != "" {
+			outReq.Header.Set(hdr, v)
+		}
+	}
+
+	if err := h.setProviderAuth(outReq, prov, agentID, requestedModel, start, w); err != nil {
+		return // error already written
+	}
+
+	h.proxyAndLog(w, outReq, agentID, "anthropic", requestedModel, requestedModel, start)
+}
+
+// setProviderAuth applies the provider's auth method to the upstream request.
+// Returns an error (and writes the HTTP response) if auth cannot be applied.
+func (h *Handler) setProviderAuth(outReq *http.Request, prov *provider.Provider, agentID, requestedModel string, start time.Time, w http.ResponseWriter) error {
 	switch strings.ToLower(strings.TrimSpace(prov.Auth)) {
 	case "", "bearer":
 		if strings.TrimSpace(prov.APIKey) == "" {
 			h.fail(w, http.StatusBadGateway, "provider API key not configured", agentID, requestedModel, start, fmt.Errorf("missing API key for %s", prov.Name))
-			return
+			return fmt.Errorf("missing API key")
 		}
 		outReq.Header.Set("Authorization", "Bearer "+prov.APIKey)
+	case "x-api-key":
+		if strings.TrimSpace(prov.APIKey) == "" {
+			h.fail(w, http.StatusBadGateway, "provider API key not configured", agentID, requestedModel, start, fmt.Errorf("missing API key for %s", prov.Name))
+			return fmt.Errorf("missing API key")
+		}
+		outReq.Header.Del("Authorization")
+		outReq.Header.Set("X-Api-Key", prov.APIKey)
 	case "none":
 		outReq.Header.Del("Authorization")
 	default:
 		h.fail(w, http.StatusBadGateway, "unsupported provider auth", agentID, requestedModel, start, fmt.Errorf("unsupported auth mode: %s", prov.Auth))
-		return
+		return fmt.Errorf("unsupported auth mode")
 	}
+	return nil
+}
 
+// proxyAndLog forwards the request upstream, streams the response, and logs.
+func (h *Handler) proxyAndLog(w http.ResponseWriter, outReq *http.Request, agentID, providerName, requestedModel, upstreamModel string, start time.Time) {
 	h.logger.LogRequest(agentID, requestedModel)
 	resp, err := h.client.Do(outReq)
 	if err != nil {
