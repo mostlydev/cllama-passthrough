@@ -19,7 +19,7 @@ flowchart LR
 
 ## The Architecture
 
-A `cllama` proxy sits between the runner (the agent's application code) and the LLM provider. In the [Clawdapus](../README.md) architecture, agents are treated as untrusted workloads — containers that can think, but whose compute access is a privilege granted by the operator, not a right assumed by the process.
+A `cllama` proxy sits between the runner (the agent's application code) and the LLM provider. In the [Clawdapus](https://github.com/mostlydev/clawdapus) architecture, agents are treated as untrusted workloads — containers that can think, but whose compute access is a privilege granted by the operator, not a right assumed by the process.
 
 **Credential starvation** is the enforcement mechanism. The agent container is provisioned with a unique bearer token (`<agent-id>:<48-hex-secret>`). The proxy holds the real provider API keys. Because the agent lacks the credentials to call providers directly, all inference *must* transit the proxy — even if a compromised agent tries to bypass its configured base URL.
 
@@ -87,16 +87,6 @@ docker run -p 8080:8080 -p 8081:8081 \
   -v ./context:/claw/context:ro \
   ghcr.io/mostlydev/cllama-passthrough:latest
 ```
-
-### Spike demo
-
-A self-contained test that boots a mock LLM backend, creates three agents from the [trading-desk](../examples/trading-desk) reference pod, fires a burst of 16 requests across multiple providers, and leaves the dashboard running for inspection:
-
-```bash
-go test -tags spike -v -run TestSpikeLiveDashboard ./cmd/cllama-passthrough/...
-```
-
-Open `http://127.0.0.1:9081/` — three agents, four providers, real cost data. Ctrl-C to stop.
 
 ---
 
@@ -230,7 +220,7 @@ These logs feed `docker compose logs`, fleet telemetry pipelines, and `claw audi
 
 ## The cllama Standard
 
-`cllama` is an open standard for context-aware LLM governance proxies. Any OpenAI-compatible proxy image that can consume Clawdapus context can act as a governance layer. The [full specification](../docs/CLLAMA_SPEC.md) defines:
+`cllama` is an open standard for context-aware LLM governance proxies. Any OpenAI-compatible proxy image that can consume Clawdapus context can act as a governance layer. The [full specification](https://github.com/mostlydev/clawdapus/blob/master/docs/CLLAMA_SPEC.md) defines:
 
 - **Bidirectional interception** — outbound prompt evaluation, inbound response amendment
 - **Multi-agent identity** — single proxy serves an entire pod, resolving callers by bearer token
@@ -256,7 +246,7 @@ flowchart LR
 
 ## Part of Clawdapus
 
-This proxy is one component in [Clawdapus](../README.md) — infrastructure-layer governance for AI agent containers. Docker on Rails for Claws.
+This proxy is one component in [Clawdapus](https://github.com/mostlydev/clawdapus) — infrastructure-layer governance for AI agent containers. Docker on Rails for Claws.
 
 ```
 Clawfile            extended Dockerfile → OCI image

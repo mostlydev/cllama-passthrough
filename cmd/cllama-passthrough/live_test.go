@@ -1,4 +1,4 @@
-//go:build spike
+//go:build dashboard
 
 package main
 
@@ -24,19 +24,19 @@ import (
 	"github.com/mostlydev/cllama-passthrough/internal/provider"
 )
 
-// TestSpikeLiveDashboard stands up a mock LLM backend, configures three
-// providers, creates agent contexts for the trading-desk pod, boots the
+// TestLiveDashboard stands up a mock LLM backend, configures three
+// providers, creates agent contexts for a mock pod, boots the
 // real proxy, fires a burst of requests as each agent, and then blocks
 // so you can browse the live dashboard.
 //
-// Run: go test -tags spike -v -run TestSpikeLiveDashboard ./cmd/cllama-passthrough/...
+// Run: go test -tags dashboard -v -run TestLiveDashboard ./cmd/cllama-passthrough/...
 //
 // Dashboard: http://127.0.0.1:9081/
 //     - Providers  → /
 //     - Pod        → /pod
 //     - Costs      → /costs
 //     - Costs JSON → /costs/api
-func TestSpikeLiveDashboard(t *testing.T) {
+func TestLiveDashboard(t *testing.T) {
 	// ── Mock LLM backend ─────────────────────────────────────────────────
 	var reqCount atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,14 +56,14 @@ func TestSpikeLiveDashboard(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{
-			"id":      fmt.Sprintf("chatcmpl-spike-%d", n),
+			"id":      fmt.Sprintf("chatcmpl-demo-%d", n),
 			"object":  "chat.completion",
 			"created": time.Now().Unix(),
 			"model":   model,
 			"choices": []map[string]any{
 				{
 					"index":         0,
-					"message":       map[string]string{"role": "assistant", "content": fmt.Sprintf("[spike response %d from %s]", n, model)},
+					"message":       map[string]string{"role": "assistant", "content": fmt.Sprintf("[demo response %d from %s]", n, model)},
 					"finish_reason": "stop",
 				},
 			},
@@ -115,12 +115,12 @@ func TestSpikeLiveDashboard(t *testing.T) {
 		"providers": {
 			"openrouter": {
 				"base_url": "%s/v1",
-				"api_key": "sk-or-spike-key",
+				"api_key": "sk-or-demo-key",
 				"auth": "bearer"
 			},
 			"anthropic": {
 				"base_url": "%s/v1",
-				"api_key": "sk-ant-spike-key",
+				"api_key": "sk-ant-demo-key",
 				"auth": "x-api-key",
 				"api_format": "openai"
 			},
@@ -170,7 +170,7 @@ func TestSpikeLiveDashboard(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	t.Log("")
 	t.Log("═══════════════════════════════════════════════════════════")
-	t.Log("  cllama-passthrough spike is live")
+	t.Log("  cllama-passthrough dashboard test is live")
 	t.Log("")
 	t.Logf("  API:       http://127.0.0.1:9080/v1/chat/completions")
 	t.Logf("  Dashboard: http://127.0.0.1:9081/")
@@ -214,7 +214,7 @@ func TestSpikeLiveDashboard(t *testing.T) {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	for i, req := range requests {
-		body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"spike request %d from %s"}]}`,
+		body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"demo request %d from %s"}]}`,
 			req.model, i+1, req.agentID)
 		httpReq, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:9080/v1/chat/completions",
 			strings.NewReader(body))
