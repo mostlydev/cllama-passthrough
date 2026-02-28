@@ -2,7 +2,7 @@
 
 **The blood-brain barrier for autonomous agents.**
 
-`cllama-passthrough` is the reference implementation of the [cllama proxy standard](https://github.com/mostlydev/clawdapus/blob/master/docs/CLLAMA_SPEC.md) — a context-aware, bidirectional LLM governance proxy that enforces **credential starvation** on untrusted agent workloads.
+`cllama` is the reference implementation of the [cllama proxy standard](https://github.com/mostlydev/clawdapus/blob/master/docs/CLLAMA_SPEC.md) — a context-aware, bidirectional LLM governance proxy that enforces **credential starvation** on untrusted agent workloads.
 
 It is a single Go binary with zero dependencies. 15 MB distroless image. Two ports: `:8080` for the OpenAI-compatible API, `:8081` for the operator dashboard. Every agent request is identity-verified, provider-routed, cost-tracked, and audit-logged — transparently. The agent never knows the proxy exists.
 
@@ -14,7 +14,6 @@ flowchart LR
   P -->|response| A
   P --- D[:8081 dashboard<br/><i>providers · pod · costs · api</i>]
 ```
-![cllama-passthrough-readme-1](../docs/art/mermaid/cllama-passthrough-readme-1.svg)
 
 ---
 
@@ -63,10 +62,10 @@ The "passthrough" reference performs no cognitive mutation. It verifies identity
 
 ```bash
 # Binary
-go build -o cllama-passthrough ./cmd/cllama-passthrough
+go build -o cllama ./cmd/cllama
 
 # Docker (~15 MB distroless)
-docker build -t ghcr.io/mostlydev/cllama-passthrough:latest .
+docker build -t ghcr.io/mostlydev/cllama:latest .
 ```
 
 Zero external dependencies. Go standard library only.
@@ -76,7 +75,7 @@ Zero external dependencies. Go standard library only.
 ## Running
 
 ```bash
-./cllama-passthrough
+./cllama
 ```
 
 Or with Docker:
@@ -86,7 +85,7 @@ docker run -p 8080:8080 -p 8081:8081 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e OPENROUTER_API_KEY=sk-or-... \
   -v ./context:/claw/context:ro \
-  ghcr.io/mostlydev/cllama-passthrough:latest
+  ghcr.io/mostlydev/cllama:latest
 ```
 
 ---
@@ -242,7 +241,6 @@ flowchart LR
     R2[runner] --> PO[policy<br/><i>scope · gate · amend</i>] --> PT2[passthrough<br/><i>route · meter · log</i>] --> P2[provider]
   end
 ```
-![cllama-passthrough-readme-2](../docs/art/mermaid/cllama-passthrough-readme-2.svg)
 
 ---
 
@@ -254,7 +252,7 @@ This proxy is one component in [Clawdapus](https://github.com/mostlydev/clawdapu
 Clawfile            extended Dockerfile → OCI image
 claw-pod.yml        extended docker-compose → governed fleet
 claw up     transpile, enforce, wire cllama, deploy
-cllama-passthrough  credential starvation + cost accounting + audit trail
+cllama              credential starvation + cost accounting + audit trail
 ```
 
 Standalone operation is fully supported. Set up the context directory, write a `providers.json`, point your agents at `:8080`, and the proxy does the rest.

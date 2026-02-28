@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/agentctx"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 //go:embed templates/*.html

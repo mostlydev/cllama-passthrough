@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/logging"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/logging"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 func TestDualServerIntegrationSmoke(t *testing.T) {

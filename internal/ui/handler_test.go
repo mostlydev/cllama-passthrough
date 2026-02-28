@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 func TestUIListsProviders(t *testing.T) {

@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/logging"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/logging"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 // TestLiveDashboard stands up a mock LLM backend, configures three
@@ -29,7 +29,7 @@ import (
 // real proxy, fires a burst of requests as each agent, and then blocks
 // so you can browse the live dashboard.
 //
-// Run: go test -tags dashboard -v -run TestLiveDashboard ./cmd/cllama-passthrough/...
+// Run: go test -tags dashboard -v -run TestLiveDashboard ./cmd/cllama/...
 //
 // Dashboard: http://127.0.0.1:9081/
 //     - Providers  → /
@@ -170,7 +170,7 @@ func TestLiveDashboard(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	t.Log("")
 	t.Log("═══════════════════════════════════════════════════════════")
-	t.Log("  cllama-passthrough dashboard test is live")
+	t.Log("  cllama dashboard test is live")
 	t.Log("")
 	t.Logf("  API:       http://127.0.0.1:9080/v1/chat/completions")
 	t.Logf("  Dashboard: http://127.0.0.1:9081/")

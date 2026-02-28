@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/identity"
-	"github.com/mostlydev/cllama-passthrough/internal/logging"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/agentctx"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/identity"
+	"github.com/mostlydev/cllama/internal/logging"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 // ContextLoader resolves per-agent context by ID.

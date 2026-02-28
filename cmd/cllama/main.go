@@ -15,12 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/logging"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
-	"github.com/mostlydev/cllama-passthrough/internal/proxy"
-	"github.com/mostlydev/cllama-passthrough/internal/ui"
+	"github.com/mostlydev/cllama/internal/agentctx"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/logging"
+	"github.com/mostlydev/cllama/internal/provider"
+	"github.com/mostlydev/cllama/internal/proxy"
+	"github.com/mostlydev/cllama/internal/ui"
 )
 
 type config struct {
@@ -33,12 +33,12 @@ type config struct {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		log.Fatalf("cllama-passthrough: %v", err)
+		log.Fatalf("cllama: %v", err)
 	}
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("cllama-passthrough", flag.ContinueOnError)
+	fs := flag.NewFlagSet("cllama", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	healthcheck := fs.Bool("healthcheck", false, "check API server health and exit")
 	if err := fs.Parse(args); err != nil {
@@ -117,7 +117,7 @@ func newUIHandler(reg *provider.Registry, acc *cost.Accumulator, contextRoot str
 }
 
 func serveServer(name string, server *http.Server, stderr io.Writer, errCh chan<- error) {
-	fmt.Fprintf(stderr, "cllama-passthrough %s listening on %s\n", name, server.Addr)
+	fmt.Fprintf(stderr, "cllama %s listening on %s\n", name, server.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		errCh <- fmt.Errorf("%s server: %w", name, err)
 	}

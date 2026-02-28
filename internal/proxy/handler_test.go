@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mostlydev/cllama-passthrough/internal/agentctx"
-	"github.com/mostlydev/cllama-passthrough/internal/cost"
-	"github.com/mostlydev/cllama-passthrough/internal/logging"
-	"github.com/mostlydev/cllama-passthrough/internal/provider"
+	"github.com/mostlydev/cllama/internal/agentctx"
+	"github.com/mostlydev/cllama/internal/cost"
+	"github.com/mostlydev/cllama/internal/logging"
+	"github.com/mostlydev/cllama/internal/provider"
 )
 
 func TestHandlerForwardsAndSwapsAuth(t *testing.T) {
