@@ -14,6 +14,7 @@ flowchart LR
   P -->|response| A
   P --- D[:8081 dashboard<br/><i>providers · pod · costs · api</i>]
 ```
+![cllama-passthrough-readme-1](../docs/art/mermaid/cllama-passthrough-readme-1.svg)
 
 ---
 
@@ -241,6 +242,7 @@ flowchart LR
     R2[runner] --> PO[policy<br/><i>scope · gate · amend</i>] --> PT2[passthrough<br/><i>route · meter · log</i>] --> P2[provider]
   end
 ```
+![cllama-passthrough-readme-2](../docs/art/mermaid/cllama-passthrough-readme-2.svg)
 
 ---
 
